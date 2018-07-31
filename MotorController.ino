@@ -11,21 +11,21 @@
 // Why am I writing this in Arduino again?
 // Pin mappings:
 const uint8_t An = 5;
-const uint8_t Ap = 7;
+const uint8_t Ap = 9;
 const uint8_t Bn = 6;
-const uint8_t Bp = 4;
+const uint8_t Bp = 3;
 
-const uint8_t fanControl = 9;
+//const uint8_t fanControl = 9;
 const uint8_t vBat = A1;
 
 const uint8_t FaultN = 8;
 const uint8_t SleepN = A0;
 const uint8_t SPI_CS = 10; // active high
 
-const uint8_t TachA1 = 2;
-const uint8_t TachA2 = A2;
-const uint8_t TachB1 = 3;
-const uint8_t TachB2 = A3;
+//const uint8_t TachA1 = 2;
+//const uint8_t TachA2 = A2;
+//const uint8_t TachB1 = 3;
+//const uint8_t TachB2 = A3;
 
 
 const uint16_t UndervoltageMask = 0x20;
@@ -76,21 +76,21 @@ void setup() {
   digitalWrite(Bn, LOW);
   digitalWrite(Bp, LOW);
   
-  pinMode(fanControl, OUTPUT); // The fan might want 12 V. If it won't start, change this to INPUT and leave it floating.
+  //pinMode(fanControl, OUTPUT); // The fan might want 12 V. If it won't start, change this to INPUT and leave it floating.
 
   pinMode(FaultN, INPUT);
 
   pinMode(SleepN, OUTPUT); // We will ever want this not to be high? (maybe require arming)
-  digitalWrite(SleepN, HIGH); // Turn on the driver
+  digitalWrite(SleepN, HIGH); // Turn ON the driver for now
 
   pinMode(SPI_CS, OUTPUT);
   digitalWrite(SPI_CS, LOW);
 
-  pinMode(TachA1, INPUT);
+  /*pinMode(TachA1, INPUT);
   pinMode(TachA2, INPUT);
   pinMode(TachB1, INPUT);
   pinMode(TachB2, INPUT);
-  // TODO: Set up ISRs on the tachometer pins
+  // TODO: Set up ISRs on the tachometer pins*/
 
   // Set up SPI bus with default lines and pins
   SPI.begin();
@@ -128,6 +128,7 @@ void setup() {
   
   interlockClosed = false;
 
+   digitalWrite(SleepN, LOW);
   
   Serial.println("Initialized; Locked out.");
   
@@ -183,14 +184,18 @@ void setMotorSpeed(uint8_t pn, uint8_t pp, uint8_t spd, bool rev, bool brk) {
     digitalWrite(pp, brk);
     return;
   }
-
-  if (!rev) {
-    spd = 255-spd;
-    // If we're going forwards, we need to invert the PWM duty cycle.
-    // Otherwise, 0 speed will give 100% power.
+  
+  if (rev) {
+    // Reverse
+    analogWrite(pn, spd);
+    digitalWrite(pp, LOW); // Direction
+  } else {
+    // Forward
+    analogWrite(pp, spd);
+    digitalWrite(pn, LOW); // Direction
   }
-  analogWrite(pn, spd);
-  digitalWrite(pp, !rev); // Direction
+  
+  
 }
 
 
@@ -349,6 +354,7 @@ void getSerialUpdate() {
   }
   if (header == 'L') {
     interlockClosed = in;
+    if (in == 1) chirpMotor(Bn,Bp,131,20); // C3, ish
   }
 
   tLastCommand = millis();
@@ -463,7 +469,12 @@ void loop() {
       }
     } else {
       // Interlock disabled, no connection. Just hang tight.
-      
+      if (updateCount % 125 == 0) {
+        chirpMotor(Bn,Bp,131,20); // C3, ish
+        chirpMotor(An,Ap,165,20); // E3, ish
+        chirpMotor(Bn,Bp,131,20); // C3, ish
+        chirpMotor(An,Ap,165,20); // E3, ish
+      }
     }
   }
   
