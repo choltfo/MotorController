@@ -53,6 +53,28 @@ bool braking = true;    // When speedX is 0, coast or brake?
 bool interlockClosed = false;
 
 
+// Writes to the registers on the DRV8704
+void writeReg(byte reg, uint16_t data) {
+  uint16_t output = 0x0000 | (reg << 12) | data;
+  SPI.beginTransaction(SPISettings(100000, MSBFIRST, SPI_MODE0));
+  digitalWrite(SPI_CS, HIGH);
+  uint16_t dat = SPI.transfer16(output);
+  digitalWrite(SPI_CS, LOW);
+  SPI.endTransaction();
+}
+
+// Reads the value of a register on the DRV8704
+uint16_t readReg(byte reg) {
+  uint16_t output = 0x8000 | (reg << 12);
+  SPI.beginTransaction(SPISettings(100000, MSBFIRST, SPI_MODE0));
+  digitalWrite(SPI_CS, HIGH);
+  uint16_t dat = SPI.transfer16(output);
+  digitalWrite(SPI_CS, LOW);
+  SPI.endTransaction();
+  return dat;
+}
+
+
 void setup() {
 
   Serial.begin(57600);
@@ -80,7 +102,7 @@ void setup() {
 
   pinMode(FaultN, INPUT);
 
-  pinMode(SleepN, OUTPUT); // We will ever want this not to be high? (maybe require arming)
+  pinMode(SleepN, OUTPUT);
   digitalWrite(SleepN, HIGH); // Turn ON the driver for now
 
   pinMode(SPI_CS, OUTPUT);
@@ -99,10 +121,11 @@ void setup() {
   // Say hello!
   chirpMotor(An,Ap,955,100); // C6
   chirpMotor(An,Ap,1318,250); // E6
+  digitalWrite(SleepN, LOW); // Turn OFF the driver for now
   delay(500);
   
   
-  // Beep out the voltage
+  /*// Beep out the voltage
   int batteryVolts = (getBatteryVoltage() + 500) / 1000;
 
   // Tens of volts - beep beep
@@ -116,43 +139,22 @@ void setup() {
   for (int i = 0; i < batteryVolts%10; ++i) {
     chirpMotor(Bn,Bp,1175,100); // D6
     delay(100);
-  }
+  }*/
 
   
   // Power chord/arpegio!
-  delay(300);
+  digitalWrite(SleepN, HIGH); // Turn ON the driver for now
   chirpMotor(An,Ap,1911,150); // C5
   chirpMotor(An,Ap,1275,150); // G5
   chirpMotor(An,Ap,955,150); // C6
-
+  
+  delay(50); // Give the motors time to stop cold
   
   interlockClosed = false;
-
-   digitalWrite(SleepN, LOW);
+  digitalWrite(SleepN, LOW); // Put motor driver to sleep
   
   Serial.println("Initialized; Locked out.");
   
-}
-
-// Writes to the registers on the DRV8704
-void writeReg(byte reg, uint16_t data) {
-  uint16_t output = 0x0000 | (reg << 12) | data;
-  SPI.beginTransaction(SPISettings(100000, MSBFIRST, SPI_MODE0));
-  digitalWrite(SPI_CS, HIGH);
-  uint16_t dat = SPI.transfer16(output);
-  digitalWrite(SPI_CS, LOW);
-  SPI.endTransaction();
-}
-
-// Reads the value of a register on the DRV8704
-uint16_t readReg(byte reg) {
-  uint16_t output = 0x8000 | (reg << 12);
-  SPI.beginTransaction(SPISettings(100000, MSBFIRST, SPI_MODE0));
-  digitalWrite(SPI_CS, HIGH);
-  uint16_t dat = SPI.transfer16(output);
-  digitalWrite(SPI_CS, LOW);
-  SPI.endTransaction();
-  return dat;
 }
 
 
@@ -187,34 +189,34 @@ void setMotorSpeed(uint8_t pn, uint8_t pp, uint8_t spd, bool rev, bool brk) {
   
   if (rev) {
     // Reverse
-    analogWrite(pn, spd);
     digitalWrite(pp, LOW); // Direction
+    analogWrite(pn, spd);
+    
   } else {
     // Forward
     analogWrite(pp, spd);
     digitalWrite(pn, LOW); // Direction
-  }
-  
-  
+  }  
 }
 
 
 void updateMotors() {
-  setMotorSpeed(An, Ap, speedA, reverseA, braking);
-  setMotorSpeed(Bn, Bp, speedB, reverseB, braking);
+  bool actuallyBraking = (speedA==0) && (speedB == 0) && braking;
+  setMotorSpeed(An, Ap, speedA, reverseA, actuallyBraking);
+  setMotorSpeed(Bn, Bp, speedB, reverseB, actuallyBraking);
 }
 
 
 void chirpMotor(uint8_t pn, uint8_t pp, uint16_t microPeriod, uint16_t milliLen) {
   for (uint32_t i = 0; i < 1000L*milliLen; i += microPeriod) {
-    digitalWrite(pn, LOW);
+    digitalWrite(pn, LOW); // Forward
     digitalWrite(pp, HIGH);
     delayMicroseconds (microPeriod/2);
-    digitalWrite(pn, HIGH);
-    digitalWrite(pp, LOW);
+    digitalWrite(pn, HIGH); // Brake
+    digitalWrite(pp, HIGH);
     delayMicroseconds (microPeriod/2);
   }
-  // Turn everything off!
+  // Resume whatever it is that we were supposed to be doing. Hopefully nothing?
   updateMotors(); 
 }
 
@@ -354,7 +356,13 @@ void getSerialUpdate() {
   }
   if (header == 'L') {
     interlockClosed = in;
-    if (in == 1) chirpMotor(Bn,Bp,131,20); // C3, ish
+    if (in == 1) chirpMotor(Bn,Bp,150,20); // 150 us
+  }
+
+  // Set overcurrent protection register
+  if (header == 'D') {
+    uint16_t DRIVEReg= readReg(0x06);
+    writeReg(0x06, ((DRIVEReg & 0x0FFC) | (in & 0x03)) & (0x0FFF));
   }
 
   tLastCommand = millis();
@@ -376,6 +384,10 @@ void sendSerialData() {
   Serial.print("B");
   if (braking) Serial.print("1");
   else Serial.print("0");
+
+  Serial.print("D:");
+  Serial.print(readReg(0x06),HEX);
+  
   
   uint16_t fReg = checkFault();
   if (fReg) {
@@ -422,6 +434,7 @@ void loop() {
   // LOW VOLTAGE LOCK-OUT
   if (getBatteryVoltage() < 22000) {
     digitalWrite(SleepN, LOW); // Turn off the driver, we're damaging the batteries
+    return;
   } else {
     digitalWrite(SleepN, HIGH); // Turn on the driver, everything's fine!
   }
@@ -447,8 +460,8 @@ void loop() {
       
       // Quick emergency chime
       if (updateCount % 10 == 0) {
-        chirpMotor(An,Ap,330,50); // E4, ish
-        chirpMotor(Bn,Bp,262,50); // C4, ish
+        chirpMotor(An,Ap,189,50);
+        chirpMotor(Bn,Bp,176,50);
       }
     }
 
